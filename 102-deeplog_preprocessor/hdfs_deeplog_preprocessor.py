@@ -10,6 +10,9 @@ class hdfs_deeplog_preprocessor:
     SEQUENTIAL_OUTPUT_DIR = '../Data/log_preprocessor/logkey/'
     VARIABLE_OUTPUT_DIR = '../Data/log_preprocessor/logvalue/'
     OUTPUT_FILES = ['abnormal','normal']
+    TRAIN_PARAMETER = ['train/', 0.0, 0.5]
+    VALIDATE_PARAMETER = ['validate/', 0.5, 0.75]
+    TEST_PARAMETER = ['test/', 0.75, 1.0]
     LOG_LINE = 400000
     NUM_OF_LOGKEY = 26
     VECTOR_DIMENSION = 10
@@ -21,6 +24,12 @@ class hdfs_deeplog_preprocessor:
 
     word_to_vector = {}
     modified_logs = []
+
+    '''
+    -----------------------------------------------
+    以下是处理sequential部分
+    -----------------------------------------------
+    '''
 
     def load_normal_info(self):
         NORMAL_WORD = 'Normal'
@@ -78,17 +87,26 @@ class hdfs_deeplog_preprocessor:
                 logkeys.append(logkey)
                 self.block_to_logkey[block] = logkeys
 
-    def output_sequential(self):
-        if not os.path.exists(self.SEQUENTIAL_OUTPUT_DIR):
-            os.makedirs(self.SEQUENTIAL_OUTPUT_DIR)
+    def output_sequential(self,parameter):
+        dir_suffix = parameter[0]
+        left_rate = parameter[1]
+        right_rate = parameter[2]
+        left_range = int(len(self.block_to_line) * left_rate)
+        right_range = int(len(self.block_to_line) * right_rate)
+
+        if not os.path.exists(self.SEQUENTIAL_OUTPUT_DIR + dir_suffix):
+            os.makedirs(self.SEQUENTIAL_OUTPUT_DIR + dir_suffix)
         for file_index in range(len(self.OUTPUT_FILES)):
-            with open(self.SEQUENTIAL_OUTPUT_DIR+self.OUTPUT_FILES[file_index],'w') as f:
-                for block,logkeys in self.block_to_logkey.items():
+            with open(self.SEQUENTIAL_OUTPUT_DIR + dir_suffix + self.OUTPUT_FILES[file_index],'w') as f:
+                for block_id,block in enumerate(self.block_to_logkey):
+                    if block_id not in range(left_range, right_range):
+                        continue
                     if self.is_block_normal[block]:
                         file_select = 1
                     else:
                         file_select = 0
                     if file_select == file_index:
+                        logkeys = self.block_to_logkey[block]
                         f.write(' '.join(str(logkey) for logkey in logkeys)+'\n')
 
     '''
@@ -132,15 +150,23 @@ class hdfs_deeplog_preprocessor:
         output = ','.join(vector_str)
         return output
 
-    def output_variable(self):
-        if not os.path.exists(self.VARIABLE_OUTPUT_DIR+'normal/'):
-            os.makedirs(self.VARIABLE_OUTPUT_DIR+'normal/')
-        if not os.path.exists(self.VARIABLE_OUTPUT_DIR+'abnormal/'):
-            os.makedirs(self.VARIABLE_OUTPUT_DIR+'abnormal/')
+    def output_variable(self,parameter):
+        dir_suffix = parameter[0]
+        left_rate = parameter[1]
+        right_rate = parameter[2]
+        left_range = int(len(self.block_to_line) * left_rate)
+        right_range = int(len(self.block_to_line) * right_rate)
+        if not os.path.exists(self.VARIABLE_OUTPUT_DIR + dir_suffix+ 'normal/'):
+            os.makedirs(self.VARIABLE_OUTPUT_DIR + dir_suffix+ 'normal/')
+        if not os.path.exists(self.VARIABLE_OUTPUT_DIR + dir_suffix+ 'abnormal/'):
+            os.makedirs(self.VARIABLE_OUTPUT_DIR + dir_suffix+ 'abnormal/')
         logkey_to_normal_writelist = [[] for i in range(self.NUM_OF_LOGKEY+1)]
         logkey_to_abnormal_writelist = [[] for i in range(self.NUM_OF_LOGKEY+1)]
 
-        for block,lines in self.block_to_line.items():
+        for block_id,block in enumerate(self.block_to_line):
+            if block_id not in range(left_range,right_range):
+                continue
+            lines = self.block_to_line[block]
             logkey_to_variables = [[] for i in range(self.NUM_OF_LOGKEY+1)]
             for line in lines:
                 log = self.modified_logs[line]
@@ -158,9 +184,9 @@ class hdfs_deeplog_preprocessor:
                     logkey_to_abnormal_writelist[logkey].append(output_line+'\n')
 
         for logkey in range(1,self.NUM_OF_LOGKEY+1):
-            with open(self.VARIABLE_OUTPUT_DIR+ 'normal/' + str(logkey),'w') as f:
+            with open(self.VARIABLE_OUTPUT_DIR + dir_suffix + 'normal/' + str(logkey),'w') as f:
                 f.writelines(logkey_to_normal_writelist[logkey])
-            with open(self.VARIABLE_OUTPUT_DIR+ 'abnormal/' + str(logkey),'w') as f:
+            with open(self.VARIABLE_OUTPUT_DIR + dir_suffix + 'abnormal/' + str(logkey),'w') as f:
                 f.writelines(logkey_to_abnormal_writelist[logkey])
 
     '''
@@ -175,7 +201,9 @@ class hdfs_deeplog_preprocessor:
         self.load_line_info()
         self.load_logkey_info()
         self.generate_block_to_logkey()
-        self.output_sequential()
+        self.output_sequential(self.TRAIN_PARAMETER)
+        self.output_sequential(self.VALIDATE_PARAMETER)
+        self.output_sequential(self.TEST_PARAMETER)
 
     def generate_variable(self):
         self.load_normal_info()
@@ -183,10 +211,12 @@ class hdfs_deeplog_preprocessor:
         self.load_logkey_info()
         self.load_word_vector()
         self.load_modified_log()
-        self.output_variable()
+        self.output_variable(self.TRAIN_PARAMETER)
+        self.output_variable(self.VALIDATE_PARAMETER)
+        self.output_variable(self.TEST_PARAMETER)
 
     def __init__(self):
         self.generate_sequential()
-        # self.generate_variable()
+        self.generate_variable()
 
 hdfs_deeplog_preprocessor()
