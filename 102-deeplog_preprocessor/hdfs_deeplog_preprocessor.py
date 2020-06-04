@@ -1,33 +1,40 @@
 import csv
 import os
+import random
 
 class hdfs_deeplog_preprocessor:
+    # 日志变量设置
+    LOG_LINE = 400000
+    NUM_OF_LOGKEY = 26
+    VECTOR_DIMENSION = 10
+    NORMAL_STAGE_TO_STAGE_SIZE = [2000, 1000, 1000]
+    ABNORMAL_STAGE_TO_STAGE_SIZE = [800, 200, 200]
+
+    # 读入数据部分
     ANOMALY_LABEL = '../Data/log/hdfs/anomaly_label.csv'
     LOG_FILE = '../Data/log/hdfs/HDFS_40w'
     MOFIFIED_LOG_FILE = '../Data/log/hdfs/modified_HDFS_40w'
     WORD_VECTOR_FILE = '../Data/log/hdfs/word2vec_HDFS_40w'
     LOGKEY_DIR = '../Data/FTTreeResult-HDFS/clusters/'
-    SEQUENTIAL_OUTPUT_DIR = '../Data/log_preprocessor/logkey/'
-    VARIABLE_OUTPUT_DIR = '../Data/log_preprocessor/logvalue/'
-    OUTPUT_FILES = ['abnormal','normal']
-    TRAIN_PARAMETER = ['train/', 0.0, 0.5]
-    VALIDATE_PARAMETER = ['validate/', 0.5, 0.75]
-    TEST_PARAMETER = ['test/', 0.75, 1.0]
-    LOG_LINE = 400000
-    NUM_OF_LOGKEY = 26
-    VECTOR_DIMENSION = 10
-
     is_block_normal = {}
-    block_to_line = {}
+    block_to_lines = {}
     line_to_logkey = []
-    block_to_logkey = {}
-
     word_to_vector = {}
     modified_logs = []
 
+    # 输出数据部分
+    OUTPUT_DIR_PREFIX = '../Data/log_preprocessor/'
+    STAGE_TO_OUTPUT_DIR_INFIX = ['train/','validate/','test/']
+    normal_blocks = []
+    abnormal_blocks = []
+    normal_block_index_to_stage = []
+    abnormal_block_index_to_stage = []
+
+
+
     '''
     -----------------------------------------------
-    以下是处理sequential部分
+    以下是load_data部分
     -----------------------------------------------
     '''
 
@@ -46,24 +53,16 @@ class hdfs_deeplog_preprocessor:
                     normal_info = False
                 if block != FIRST_LINE_BLOCK_NAME:
                     self.is_block_normal[block] = normal_info
-                    self.block_to_line[block] = []
-
-    def get_blockid(self, line):
-        words = line.strip().split(' ')
-        for word in words:
-            if len(word)>4 and word[:4] == 'blk_':
-                return word
-        print('无法找到block_id')
-        print(line)
-        exit(1)
 
     def load_line_info(self):
         with open(self.LOG_FILE,'r') as f:
             for line_index in range(self.LOG_LINE):
                 line = f.readline()
                 block = self.get_blockid(line)
-                self.block_to_line[block].append(line_index)
-        # print(self.block_to_line['blk_-1608999687919862906'])
+                if block not in self.block_to_lines.keys():
+                    self.block_to_lines[block] = []
+                self.block_to_lines[block].append(line_index)
+        # print(self.block_to_lines['blk_-1608999687919862906'])
 
     def load_logkey_info(self):
         self.line_to_logkey = [0 for i in range(self.LOG_LINE)]
@@ -79,43 +78,6 @@ class hdfs_deeplog_preprocessor:
                         exit(2)
                     self.line_to_logkey[line_index] = logkey
 
-    def generate_block_to_logkey(self):
-        for block,lines in self.block_to_line.items():
-            logkeys = []
-            for line in lines:
-                logkey = self.line_to_logkey[line]
-                logkeys.append(logkey)
-                self.block_to_logkey[block] = logkeys
-
-    def output_sequential(self,parameter):
-        dir_suffix = parameter[0]
-        left_rate = parameter[1]
-        right_rate = parameter[2]
-        left_range = int(len(self.block_to_line) * left_rate)
-        right_range = int(len(self.block_to_line) * right_rate)
-
-        if not os.path.exists(self.SEQUENTIAL_OUTPUT_DIR + dir_suffix):
-            os.makedirs(self.SEQUENTIAL_OUTPUT_DIR + dir_suffix)
-        for file_index in range(len(self.OUTPUT_FILES)):
-            with open(self.SEQUENTIAL_OUTPUT_DIR + dir_suffix + self.OUTPUT_FILES[file_index],'w') as f:
-                for block_id,block in enumerate(self.block_to_logkey):
-                    if block_id not in range(left_range, right_range):
-                        continue
-                    if self.is_block_normal[block]:
-                        file_select = 1
-                    else:
-                        file_select = 0
-                    if file_select == file_index:
-                        logkeys = self.block_to_logkey[block]
-                        f.write(' '.join(str(logkey) for logkey in logkeys)+'\n')
-
-    '''
-    -----------------------------------------------
-    以下是处理variable部分
-    -----------------------------------------------
-    '''
-
-
     def load_word_vector(self):
         with open(self.WORD_VECTOR_FILE, 'r') as r:
             for line in r.readlines():
@@ -128,6 +90,29 @@ class hdfs_deeplog_preprocessor:
         with open(self.MOFIFIED_LOG_FILE, 'r') as file:
             content_list = file.readlines()
             self.modified_logs = [x.strip() for x in content_list]
+
+    def generate_block_list(self):
+        for block in self.block_to_lines.keys():
+            if self.is_block_normal[block]:
+                self.normal_blocks.append(block)
+            else:
+                self.abnormal_blocks.append(block)
+
+    '''
+    -----------------------------------------------
+    以下是一些辅助函数
+    -----------------------------------------------
+    '''
+
+    def get_blockid(self, line):
+        words = line.strip().split(' ')
+        for word in words:
+            if len(word)>4 and word[:4] == 'blk_':
+                return word
+        print('无法找到block_id')
+        print(line)
+        exit(1)
+
 
     def get_sentence_vector(self, sentence):
         words = sentence.split(' ')
@@ -147,76 +132,126 @@ class hdfs_deeplog_preprocessor:
         for idx, value in enumerate(old_vector):
             old_vector[idx] = value / word_count
         vector_str = list(map(str, old_vector))
-        output = ','.join(vector_str)
-        return output
+        sentence_vector = ','.join(vector_str)
+        return sentence_vector
 
-    def output_variable(self,parameter):
-        dir_suffix = parameter[0]
-        left_rate = parameter[1]
-        right_rate = parameter[2]
-        left_range = int(len(self.block_to_line) * left_rate)
-        right_range = int(len(self.block_to_line) * right_rate)
-        if not os.path.exists(self.VARIABLE_OUTPUT_DIR + dir_suffix+ 'normal/'):
-            os.makedirs(self.VARIABLE_OUTPUT_DIR + dir_suffix+ 'normal/')
-        if not os.path.exists(self.VARIABLE_OUTPUT_DIR + dir_suffix+ 'abnormal/'):
-            os.makedirs(self.VARIABLE_OUTPUT_DIR + dir_suffix+ 'abnormal/')
-        logkey_to_normal_writelist = [[] for i in range(self.NUM_OF_LOGKEY+1)]
-        logkey_to_abnormal_writelist = [[] for i in range(self.NUM_OF_LOGKEY+1)]
+    def get_logkey_and_logvalue_for_session(self, lines):
+        logkeys = []
+        logkey_to_logvalues = [[] for i in range(self.NUM_OF_LOGKEY+1)]
+        for line in lines:
+            logkey = self.line_to_logkey[line]
+            logkeys.append(logkey)
+            log = self.modified_logs[line]
+            vector = self.get_sentence_vector(log)
+            logkey_to_logvalues[logkey].append(vector)
+        return logkeys,logkey_to_logvalues
+    '''
+    -----------------------------------------------
+    以下是output_logkey_and_logvalue部分
+    -----------------------------------------------
+    '''
 
-        for block_id,block in enumerate(self.block_to_line):
-            if block_id not in range(left_range,right_range):
-                continue
-            lines = self.block_to_line[block]
-            logkey_to_variables = [[] for i in range(self.NUM_OF_LOGKEY+1)]
-            for line in lines:
-                log = self.modified_logs[line]
-                vector = self.get_sentence_vector(log)
-                logkey = self.line_to_logkey[line]
-                logkey_to_variables[logkey].append(vector)
-            for logkey in range(1,self.NUM_OF_LOGKEY+1):
-                if len(logkey_to_variables[logkey]) == 0:
-                    output_line = '-1'
-                else:
-                    output_line = ' '.join(logkey_to_variables[logkey])
-                if self.is_block_normal[block]:
-                    logkey_to_normal_writelist[logkey].append(output_line+'\n')
-                else:
-                    logkey_to_abnormal_writelist[logkey].append(output_line+'\n')
+    def get_block_stage_info(self,total_length,stage_to_length):
+        if sum(stage_to_length) > total_length:
+            print('要输出的条目太大，大于数据集中存在的条目。')
+            print(total_length)
+            print(stage_to_length)
+            exit(3)
+        table = [-1 for i in range(total_length)]
+        for stage in range(len(stage_to_length)):
+            stage_length_count = 0
+            while stage_length_count < stage_to_length[stage]:
+                table_index = random.randint(0,total_length-1)
+                if table[table_index] == -1:
+                    table[table_index] = stage
+                    stage_length_count += 1
+        return table
 
+    def output(self,stage,output_normal):
+        if output_normal:
+            OUTPUT_DIR_SUFFIXES = ['logkey/','logvalue/normal/']
+            LOGKEY_FILE = 'normal'
+            blocks = self.normal_blocks
+            block_index_to_stage = self.normal_block_index_to_stage
+        else:
+            OUTPUT_DIR_SUFFIXES = ['logkey/', 'logvalue/abnormal/']
+            LOGKEY_FILE = 'abnormal'
+            blocks = self.abnormal_blocks
+            block_index_to_stage = self.abnormal_block_index_to_stage
+
+        LOGKEY_OUTPUT_DIR = self.OUTPUT_DIR_PREFIX + \
+                            self.STAGE_TO_OUTPUT_DIR_INFIX[stage] + OUTPUT_DIR_SUFFIXES[0]
+        LOGVALUE_OUTPUT_DIR = self.OUTPUT_DIR_PREFIX + \
+                              self.STAGE_TO_OUTPUT_DIR_INFIX[stage] + OUTPUT_DIR_SUFFIXES[1]
+        if not os.path.exists(LOGKEY_OUTPUT_DIR):
+                os.makedirs(LOGKEY_OUTPUT_DIR)
+        if not os.path.exists(LOGVALUE_OUTPUT_DIR):
+                os.makedirs(LOGVALUE_OUTPUT_DIR)
+        logkey_writelist = []
+        logkey_to_logvalue_writelist = [[] for i in range(self.NUM_OF_LOGKEY+1)]
+
+        for block_index,block in enumerate(blocks):
+            if block_index_to_stage[block_index] == stage:
+                lines = self.block_to_lines[block]
+                logkeys, logkey_to_logvalues = \
+                    self.get_logkey_and_logvalue_for_session(lines)
+                logkey_line = ' '.join(str(logkey) for logkey in logkeys)
+                logkey_writelist.append(logkey_line+'\n')
+                for logkey in range(1,self.NUM_OF_LOGKEY+1):
+                    if len(logkey_to_logvalues[logkey]) == 0:
+                        logvalue_line = '-1'
+                    else:
+                        logvalue_line = ' '.join(logkey_to_logvalues[logkey])
+                    logkey_to_logvalue_writelist[logkey].append(logvalue_line+'\n')
+
+        with open(LOGKEY_OUTPUT_DIR + LOGKEY_FILE,'w') as f:
+            f.writelines(logkey_writelist)
         for logkey in range(1,self.NUM_OF_LOGKEY+1):
-            with open(self.VARIABLE_OUTPUT_DIR + dir_suffix + 'normal/' + str(logkey),'w') as f:
-                f.writelines(logkey_to_normal_writelist[logkey])
-            with open(self.VARIABLE_OUTPUT_DIR + dir_suffix + 'abnormal/' + str(logkey),'w') as f:
-                f.writelines(logkey_to_abnormal_writelist[logkey])
+            LOGVALUE_FILE = str(logkey)
+            with open(LOGVALUE_OUTPUT_DIR + LOGVALUE_FILE,'w') as f:
+                f.writelines(logkey_to_logvalue_writelist[logkey])
+
 
     '''
     -----------------------------------------------
-    以下是处理main函数部分
+    以下是main函数部分
     -----------------------------------------------
     '''
 
 
-    def generate_sequential(self):
+    def load_data(self):
         self.load_normal_info()
+        print('正常/异常标签加载成功')
         self.load_line_info()
+        print('数据集block信息加载成功')
         self.load_logkey_info()
-        self.generate_block_to_logkey()
-        self.output_sequential(self.TRAIN_PARAMETER)
-        self.output_sequential(self.VALIDATE_PARAMETER)
-        self.output_sequential(self.TEST_PARAMETER)
-
-    def generate_variable(self):
-        self.load_normal_info()
-        self.load_line_info()
-        self.load_logkey_info()
+        print('从clusters取出logkey信息成功')
         self.load_word_vector()
+        print('读入word vector信息成功')
         self.load_modified_log()
-        self.output_variable(self.TRAIN_PARAMETER)
-        self.output_variable(self.VALIDATE_PARAMETER)
-        self.output_variable(self.TEST_PARAMETER)
+        print('读入log信息成功')
+        self.generate_block_list()
+        print('将block划分为正常/异常成功')
+
+    def output_logkey_and_logvalue(self):
+        self.abnormal_block_index_to_stage = self.get_block_stage_info \
+            (len(self.abnormal_blocks),self.ABNORMAL_STAGE_TO_STAGE_SIZE)
+        print('给异常block选择train validate test数据成功')
+        self.normal_block_index_to_stage = self.get_block_stage_info \
+            (len(self.normal_blocks), self.NORMAL_STAGE_TO_STAGE_SIZE)
+        print('给正常block选择train validate test数据成功')
+        for stage in range(len(self.STAGE_TO_OUTPUT_DIR_INFIX)):
+            self.output(stage, output_normal=True)
+            print('给阶段' + str(stage) + '输出正常logkey和logvalue成功')
+            self.output(stage, output_normal=False)
+            print('给阶段' + str(stage) + '输出异常logkey和logvalue成功')
 
     def __init__(self):
-        self.generate_sequential()
-        self.generate_variable()
+        self.load_data()
+        print('数据加载成功')
+        print('正常的session数：' + str(len(self.normal_blocks)))
+        print('异常的session数：' + str(len(self.abnormal_blocks)))
+        self.output_logkey_and_logvalue()
+        print('数据生成成功')
 
 hdfs_deeplog_preprocessor()
